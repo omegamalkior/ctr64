@@ -465,6 +465,119 @@ index 0000000..dc7562d
 +#else
 +#define CTR64_PROF(id)
 +#endif
+diff --git a/GLideN64/src/Ctr64Words.h b/GLideN64/src/Ctr64Words.h
+new file mode 100644
+index 0000000..4205276
+--- /dev/null
++++ b/GLideN64/src/Ctr64Words.h
+@@ -0,0 +1,107 @@
++#ifndef CTR64_WORDS_H
++#define CTR64_WORDS_H
++/* ctr64 (3DS, ARM11): word runs compared / filled 8 words per load/store-multiple.
++ * Used by the frame buffer validity checks (FrameBuffer::isValid, every VI) and RDRAM fills
++ * (FrameBufferList::fillRDRAM, every clear). Answers are the same as the plain loops:
++ * the scans only skip groups whose words are all exactly equal; every other group is left to
++ * the caller's exact (masked) count. */
++
++
++#if defined(__3DS__) && defined(__arm__) && !defined(__thumb__)
++/* First 8-word group at or after p (p..end, end - p a multiple of 8 words) that is not entirely
++ * equal to v; end if all are. */
++static inline const unsigned int *ctr64_skip_eq8(const unsigned int *p, const unsigned int *end, unsigned int v)
++{
++	__asm__ volatile(
++		"1:\n\t"
++		"cmp     %[p], %[end]\n\t"
++		"bhs     2f\n\t"
++		"ldm     %[p], {r4, r5, r6, r7, r8, r9, r10, r12}\n\t"
++		"teq     r4, %[v]\n\t"
++		"teqeq   r5, %[v]\n\t"
++		"teqeq   r6, %[v]\n\t"
++		"teqeq   r7, %[v]\n\t"
++		"teqeq   r8, %[v]\n\t"
++		"teqeq   r9, %[v]\n\t"
++		"teqeq   r10, %[v]\n\t"
++		"teqeq   r12, %[v]\n\t"
++		"addeq   %[p], %[p], #32\n\t"
++		"beq     1b\n\t"
++		"2:\n\t"
++		: [p] "+r"(p)
++		: [end] "r"(end), [v] "r"(v)
++		: "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "cc", "memory");
++	return p;
++}
++
++/* First 4-word group at or after a (a..aend, a multiple of 4 words) where a differs from b
++ * (b advances with a); aend if none. */
++static inline const unsigned int *ctr64_skip_same4(const unsigned int *a, const unsigned int *aend, const unsigned int *b)
++{
++	__asm__ volatile(
++		"1:\n\t"
++		"cmp     %[a], %[aend]\n\t"
++		"bhs     2f\n\t"
++		"ldm     %[a], {r4, r5, r6, r7}\n\t"
++		"ldm     %[b], {r8, r9, r10, r12}\n\t"
++		"teq     r4, r8\n\t"
++		"teqeq   r5, r9\n\t"
++		"teqeq   r6, r10\n\t"
++		"teqeq   r7, r12\n\t"
++		"addeq   %[a], %[a], #16\n\t"
++		"addeq   %[b], %[b], #16\n\t"
++		"beq     1b\n\t"
++		"2:\n\t"
++		: [a] "+r"(a), [b] "+r"(b)
++		: [aend] "r"(aend)
++		: "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "cc", "memory");
++	return a;
++}
++
++/* p[0..n) = v */
++static inline void ctr64_fill_words(unsigned int *p, unsigned int n, unsigned int v)
++{
++	unsigned int *e8 = p + (n & ~7u);
++	if (p != e8) {
++		__asm__ volatile(
++			"mov     r4, %[v]\n\t"
++			"mov     r5, %[v]\n\t"
++			"mov     r6, %[v]\n\t"
++			"mov     r7, %[v]\n\t"
++			"mov     r8, %[v]\n\t"
++			"mov     r9, %[v]\n\t"
++			"mov     r10, %[v]\n\t"
++			"mov     r12, %[v]\n\t"
++			"1:\n\t"
++			"stmia   %[p]!, {r4, r5, r6, r7, r8, r9, r10, r12}\n\t"
++			"cmp     %[p], %[e]\n\t"
++			"blo     1b\n\t"
++			: [p] "+r"(p)
++			: [e] "r"(e8), [v] "r"(v)
++			: "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "cc", "memory");
++	}
++	for (unsigned int i = 0; i < (n & 7u); ++i)
++		p[i] = v;
++}
++#else
++static inline const unsigned int *ctr64_skip_eq8(const unsigned int *p, const unsigned int *end, unsigned int v)
++{
++	while (p < end && p[0] == v && p[1] == v && p[2] == v && p[3] == v && p[4] == v && p[5] == v &&
++		   p[6] == v && p[7] == v)
++		p += 8;
++	return p;
++}
++static inline const unsigned int *ctr64_skip_same4(const unsigned int *a, const unsigned int *aend, const unsigned int *b)
++{
++	while (a < aend && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3])
++		a += 4, b += 4;
++	return a;
++}
++static inline void ctr64_fill_words(unsigned int *p, unsigned int n, unsigned int v)
++{
++	for (unsigned int i = 0; i < n; ++i)
++		p[i] = v;
++}
++#endif
++
++#endif
 diff --git a/GLideN64/src/DepthBuffer.cpp b/GLideN64/src/DepthBuffer.cpp
 index 05cc8fe..e284f46 100644
 --- a/GLideN64/src/DepthBuffer.cpp
@@ -564,15 +677,16 @@ index ac4e150..855667d 100644
  	void setCleared(bool _cleared);
  	DepthBuffer *findBuffer(u32 _address);
 diff --git a/GLideN64/src/FrameBuffer.cpp b/GLideN64/src/FrameBuffer.cpp
-index 68cf2bf..dd6bc69 100644
+index 68cf2bf..5ea41b3 100644
 --- a/GLideN64/src/FrameBuffer.cpp
 +++ b/GLideN64/src/FrameBuffer.cpp
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
 +#include "Ctr64Prof.h"
++#include "Ctr64Words.h"
  #include <assert.h>
  #include <math.h>
  #include <algorithm>
-@@ -146,6 +147,10 @@ bool FrameBuffer::isAuxiliary() const
+@@ -146,6 +148,10 @@ bool FrameBuffer::isAuxiliary() const
  	return m_width != VI.width || m_size < G_IM_SIZ_16b;
  }
  
@@ -583,7 +697,7 @@ index 68cf2bf..dd6bc69 100644
  void FrameBuffer::init(u32 _address, u16 _format, u16 _size, u16 _width, bool _cfb)
  {
  	m_startAddress = _address;
-@@ -161,6 +166,15 @@ void FrameBuffer::init(u32 _address, u16 _format, u16 _size, u16 _width, bool _c
+@@ -161,6 +167,15 @@ void FrameBuffer::init(u32 _address, u16 _format, u16 _size, u16 _width, bool _c
  	} else {
  		m_scale = std::max(dwnd().getScaleX(), 1.0f);
  	}
@@ -599,7 +713,7 @@ index 68cf2bf..dd6bc69 100644
  	m_cfb = _cfb;
  	m_cleared = false;
  	m_fingerprint = false;
-@@ -272,6 +286,33 @@ bool FrameBuffer::isValid(bool _forceCheck) const
+@@ -272,6 +287,63 @@ bool FrameBuffer::isValid(bool _forceCheck) const
  		const u32 start = (m_startAddress >> 2) + static_cast<u32>(m_clearParams.uly) * ci_width_in_dwords;
  		const u32 * dst = pData + start;
  		u32 wrongPixels = 0;
@@ -607,19 +721,49 @@ index 68cf2bf..dd6bc69 100644
 +		/* ctr64: 8 words per test, pixels counted only in a group that differs, and done as soon
 +		 * as the threshold is reached (same answer) */
 +		const u32 limit = (m_endAddress - m_startAddress) / 400;
++		/* groups whose words all still hold the exact fill value are skipped by
++		 * ctr64_skip_eq8 (ldm + teq chain); the others are counted as before */
++		const u32 rawFill = m_clearParams.fillcolor;
++		if (m_clearParams.ulx == 0 && static_cast<u32>(m_clearParams.lrx) == 2 * ci_width_in_dwords &&
++			lry > m_clearParams.uly && (ci_width_in_dwords & 7) == 0) {
++			/* Full-width clear of a 16-bit buffer: the loop below reads lrx = 2 * width words per
++			 * row from each row start, so every word but the first and the last row's worth is
++			 * read (and counted) twice. Here each word is read once and a differing word counts
++			 * as often as the loop would count it: the same total, so the same answer. */
++			const u32 W = ci_width_in_dwords;
++			const u32 n = static_cast<u32>(lry - m_clearParams.uly);
++			const u32 *const seg[4] = { dst, dst + W, dst + n * W, dst + (n + 1) * W };
++			for (u32 sgi = 0; sgi < 3; ++sgi) {
++				const u32 weight = sgi == 1 ? 2 : 1;
++				const u32 *const ge = seg[sgi + 1];
++				for (const u32 *p = seg[sgi]; p < ge; p += 8) {
++					p = ctr64_skip_eq8(p, ge, rawFill);
++					if (p == ge)
++						break;
++					for (u32 k = 0; k < 8; ++k)
++						if ((p[k] & 0xFFFEFFFE) != testColor)
++							wrongPixels += weight;
++					if (wrongPixels >= limit)
++						return false;
++				}
++			}
++			return wrongPixels < limit;
++		}
 +		for (s32 y = m_clearParams.uly; y < lry; ++y) {
 +			s32 x = m_clearParams.ulx;
-+			for (; x + 8 <= m_clearParams.lrx; x += 8) {
-+				const u32 *p = dst + x;
-+				if ((((p[0] ^ testColor) | (p[1] ^ testColor) | (p[2] ^ testColor) | (p[3] ^ testColor) |
-+					  (p[4] ^ testColor) | (p[5] ^ testColor) | (p[6] ^ testColor) | (p[7] ^ testColor)) & 0xFFFEFFFE) == 0)
-+					continue;
++			const s32 n8 = m_clearParams.lrx > x ? ((m_clearParams.lrx - x) & ~7) : 0;
++			const u32 *const ge = dst + x + n8;
++			for (const u32 *p = dst + x; p < ge; p += 8) {
++				p = ctr64_skip_eq8(p, ge, rawFill);
++				if (p == ge)
++					break;
 +				for (u32 k = 0; k < 8; ++k)
 +					if ((p[k] & 0xFFFEFFFE) != testColor)
 +						++wrongPixels;
 +				if (wrongPixels >= limit)
 +					return false;
 +			}
++			x += n8;
 +			for (; x < m_clearParams.lrx; ++x) {
 +				if ((dst[x] & 0xFFFEFFFE) != testColor)
 +					++wrongPixels;
@@ -633,7 +777,7 @@ index 68cf2bf..dd6bc69 100644
  		for (s32 y = m_clearParams.uly; y < lry; ++y) {
  			for (s32 x = m_clearParams.ulx; x < m_clearParams.lrx; ++x) {
  				if ((dst[x] & 0xFFFEFFFE) != testColor)
-@@ -280,6 +321,7 @@ bool FrameBuffer::isValid(bool _forceCheck) const
+@@ -280,6 +352,7 @@ bool FrameBuffer::isValid(bool _forceCheck) const
  			dst += ci_width_in_dwords;
  		}
  		return wrongPixels < (m_endAddress - m_startAddress) / 400; // threshold level 1% of dwords
@@ -641,7 +785,7 @@ index 68cf2bf..dd6bc69 100644
  	} else if (m_fingerprint) {
  			//check if our fingerprint is still there
  			u32 start = m_startAddress >> 2;
-@@ -293,11 +335,34 @@ bool FrameBuffer::isValid(bool _forceCheck) const
+@@ -293,11 +366,37 @@ bool FrameBuffer::isValid(bool _forceCheck) const
  		const u32 size_dwords = size >> 2;
  		u32 start = m_startAddress >> 2;
  		u32 wrongPixels = 0;
@@ -651,16 +795,19 @@ index 68cf2bf..dd6bc69 100644
 +		const u32 limit = size / 400;
 +		const u32 *p = pData + start;
 +		u32 i = 0;
-+		for (; i + 8 <= size_dwords; i += 8) {
++		/* identical 4-word groups skipped by ctr64_skip_same4 (ldm + teq chain) */
++		const u32 n4 = size_dwords & ~3u;
++		while (i < n4) {
++			i = static_cast<u32>(ctr64_skip_same4(p + i, p + n4, pCopy + i) - p);
++			if (i >= n4)
++				break;
 +			const u32 *c = pCopy + i, *d = p + i;
-+			if ((((d[0] ^ c[0]) | (d[1] ^ c[1]) | (d[2] ^ c[2]) | (d[3] ^ c[3]) |
-+				  (d[4] ^ c[4]) | (d[5] ^ c[5]) | (d[6] ^ c[6]) | (d[7] ^ c[7])) & 0xFFFEFFFE) == 0)
-+				continue;
-+			for (u32 k = 0; k < 8; ++k)
++			for (u32 k = 0; k < 4; ++k)
 +				if (((d[k] ^ c[k]) & 0xFFFEFFFE) != 0)
 +					++wrongPixels;
 +			if (wrongPixels >= limit)
 +				return false;
++			i += 4;
 +		}
 +		for (; i < size_dwords; ++i)
 +			if (((p[i] ^ pCopy[i]) & 0xFFFEFFFE) != 0)
@@ -676,7 +823,7 @@ index 68cf2bf..dd6bc69 100644
  	}
  	return true; // No data to decide
  }
-@@ -771,6 +836,7 @@ void FrameBufferList::_createScreenSizeBuffer()
+@@ -771,6 +870,7 @@ void FrameBufferList::_createScreenSizeBuffer()
  
  void FrameBufferList::saveBuffer(u32 _address, u16 _format, u16 _size, u16 _width, bool _cfb)
  {
@@ -684,7 +831,7 @@ index 68cf2bf..dd6bc69 100644
  	if (_width > 640)
  		return;
  
-@@ -1464,6 +1530,7 @@ void FrameBufferList::OverscanBuffer::draw(u32 _fullHeight, bool _PAL)
+@@ -1464,6 +1564,7 @@ void FrameBufferList::OverscanBuffer::draw(u32 _fullHeight, bool _PAL)
  
  void FrameBufferList::renderBuffer()
  {
@@ -692,21 +839,16 @@ index 68cf2bf..dd6bc69 100644
  	if (g_debugger.isDebugMode()) {
  		g_debugger.draw();
  		return;
-@@ -1711,12 +1778,27 @@ void FrameBufferList::fillRDRAM(s32 ulx, s32 uly, s32 lrx, s32 lry)
+@@ -1711,12 +1812,22 @@ void FrameBufferList::fillRDRAM(s32 ulx, s32 uly, s32 lrx, s32 lry)
  	dst += static_cast<u32>(uly) * ci_width_in_dwords;
  	if (!isMemoryWritable(dst, lowerBound - gDP.colorImage.address))
  		return;
 +#ifdef __3DS__
 +	/* ctr64: full-screen clears every frame (MM, OoT): 8 words a step */
 +	const u32 fill = gDP.fillColor.color;
++	const u32 n = lrx > ulx ? static_cast<u32>(lrx - ulx) : 0;
 +	for (s32 y = uly; y < lry; ++y) {
-+		u32 *p = dst + ulx, *const e = dst + (lrx > ulx ? lrx : ulx);
-+		for (; p + 8 <= e; p += 8) {
-+			p[0] = fill; p[1] = fill; p[2] = fill; p[3] = fill;
-+			p[4] = fill; p[5] = fill; p[6] = fill; p[7] = fill;
-+		}
-+		for (; p < e; ++p)
-+			*p = fill;
++		ctr64_fill_words(dst + ulx, n, fill); /* stm of 8 registers */
 +		dst += ci_width_in_dwords;
 +	}
 +#else
