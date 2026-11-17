@@ -226,6 +226,7 @@ void video_draw_to_screen(const void *tex, u16 tw, u16 th, GPU_TEXCOLOR fmt, u16
     draw_screen_quad(tex, tw, th, fmt, w, h, top_is_t0, linear, 40, 360);
 }
 
+#if !defined(CTR64_RA) /* RetroArch core: ra/ra_glue.c (the image goes to RetroArch) */
 void video_draw_fullscreen(const void *tex, u16 tw, u16 th, GPU_TEXCOLOR fmt, u16 w, u16 h,
                            bool top_is_t0, bool linear)
 {
@@ -236,3 +237,4 @@ void video_present(void)
 {
     pica_frame_end(&V.screen, GFX_TOP);
 }
+#endif

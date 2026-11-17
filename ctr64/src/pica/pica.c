@@ -366,6 +366,9 @@ void pica_frame_end(const PicaTarget *screen, gfxScreen_t lcd)
         P.swap_pending = false;
     }
 
+#if defined(CTR64_RA)
+    screen = NULL; /* RetroArch core: RetroArch owns the screens (video.c's self-test frame stays off) */
+#endif
     if (screen && lcd == GFX_TOP && top_buffers()) {
         u32 dim = GX_BUFFER_DIM(screen->width, screen->height);
         queue_reserve(1);
@@ -423,6 +426,25 @@ void pica_untile_rgba8_async(const void *src, u16 width, u16 rows, void *dst)
                            GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) |
                            GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
 }
+
+#if defined(CTR64_RA)
+/* RetroArch core: the presented image as linear RGB565 for RetroArch (ra/ra_glue.c) */
+void pica_untile_rgb565_async(const void *src, u16 width, u16 rows, void *dst)
+{
+    pica_flush();
+    queue_reserve(1);
+    GX_DisplayTransfer((u32 *)src, GX_BUFFER_DIM(width, rows), (u32 *)dst, GX_BUFFER_DIM(width, rows),
+                       GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
+                           GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+                           GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+}
+
+/* RetroArch core: ctr64's GX queue is libctru's current one only inside retro_run */
+void pica_ra_bind(bool on)
+{
+    GX_BindQueue(on ? &P.queue : NULL);
+}
+#endif
 
 /* 2x2 box downscale of a tiled RGBA8 image (width x rows, multiples of 16) into a linear
  * (width/2) x (rows/2) image, queued after everything submitted so far: the transfer engine's

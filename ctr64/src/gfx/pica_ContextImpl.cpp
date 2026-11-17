@@ -935,7 +935,11 @@ inline float fast_floor(float v)
 const float k_poly_offset = -3.0f / 65536.0f;
 constexpr float k_poly_factor = -3.0f;
 
+#if defined(CTR64_RA)
+constexpr u32 WINDOW_W = 320, WINDOW_H = 240; /* RetroArch core: the 4:3 image (pica_DisplayWindow.cpp) */
+#else
 constexpr u32 WINDOW_W = 400, WINDOW_H = 240;
+#endif
 constexpr u32 TEX_WINDOW_COLOR = 0xFFFF0001u, TEX_WINDOW_DEPTH = 0xFFFF0002u;
 
 /* ---- the context ---------------------------------------------------------------------------- */
@@ -1377,9 +1381,16 @@ static const u32 k_linear_margin = 256 * 1024;
 
 static void *linear_alloc_safe(u32 bytes, u32 align)
 {
+#if defined(CTR64_RA)
+    /* RetroArch replaces libctru's linear allocator (os/ctr/ctr_linear.c): it has no such
+     * re-initialisation, and its linearSpaceFree() counts only the never-used space at the top,
+     * not freed blocks, so the check below would refuse memory that is there */
+    return linearMemAlign(bytes, align);
+#else
     if ((u64)bytes + k_linear_margin + align > linearSpaceFree())
         return nullptr;
     return linearMemAlign(bytes, align);
+#endif
 }
 extern "C" bool ctr64_xlinear_free(void *p);
 

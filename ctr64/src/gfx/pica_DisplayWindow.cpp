@@ -17,8 +17,14 @@ private:
     bool _start() override
     {
         m_bFullscreen = true;
+#if defined(CTR64_RA)
+        /* RetroArch core: the window is the N64 image (4:3); RetroArch scales it */
+        m_screenWidth = m_width = 320;
+        m_screenHeight = m_height = 240;
+#else
         m_screenWidth = m_width = 400;
         m_screenHeight = m_height = 240;
+#endif
         _setBufferSize();
         return true;
     }

@@ -11,12 +11,25 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_DEPENDS_USE_COMPILER": "OFF"
       }
+    },
+    {
+      "name": "3ds-retroarch",
+      "displayName": "Nintendo 3DS - ctr64 as a RetroArch core (libretro_ctr.a)",
+      "inherits": "3ds-release",
+      "binaryDir": "${sourceDir}/build/3ds-retroarch",
+      "cacheVariables": {
+        "CTR64_RETROARCH_CORE": "ON"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "3ds-release",
       "configurePreset": "3ds-release"
+    },
+    {
+      "name": "3ds-retroarch",
+      "configurePreset": "3ds-retroarch"
     }
   ]
 }

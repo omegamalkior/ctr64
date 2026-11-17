@@ -3,6 +3,13 @@ enable_language(ASM CXX)
 
 set(CMAKE_C_STANDARD 11)
 
+# -DCTR64_RETROARCH_CORE=ON: the RetroArch 3DS core (libretro_ctr.a for RetroArch's Makefile.ctr)
+# instead of the ctr64 app; everything is built with CTR64_RA (see src/ra/ra_glue.c)
+option(CTR64_RETROARCH_CORE "build the RetroArch 3DS core instead of the app" OFF)
+if(CTR64_RETROARCH_CORE)
+  add_compile_definitions(CTR64_RA=1)
+endif()
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/core.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/gliden64.cmake)
 
@@ -10,6 +17,35 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/gliden64.cmake)
 # DVLE[0] = basic (UI, presentation), DVLE[1] = gfx (GLideN64 backend)
 ctr_add_shader_library(ctr64_shaders shaders/basic.v.pica shaders/gfx.v.pica)
 dkp_add_embedded_binary_library(ctr64_shaders_bin ctr64_shaders)
+
+if(CTR64_RETROARCH_CORE)
+  add_library(ctr64_ra STATIC
+    src/ra/ra_glue.c
+    src/video.c
+    src/settings.c
+    src/frameskip.c
+    src/gfx_async.c
+    src/audio_async.c
+    src/rom_stream.c
+    src/ctru_abi.c
+    src/pica/pica.c
+    src/pica/pica_state.c)
+  target_include_directories(ctr64_ra PRIVATE src ${CMAKE_SOURCE_DIR}/common
+    ${CMAKE_SOURCE_DIR}/third_party/mupen64plus-libretro-nx/custom
+    ${CMAKE_SOURCE_DIR}/third_party/mupen64plus-libretro-nx/mupen64plus-core/subprojects/md5)
+  target_compile_options(ctr64_ra PRIVATE -Wall -Wno-unused-parameter -O2)
+  set_source_files_properties(src/ctru_abi.c PROPERTIES COMPILE_OPTIONS -fshort-enums)
+  target_link_libraries(ctr64_ra PRIVATE ctr64_shaders_bin ctr64_core)
+  # one archive for RetroArch: every object of the core, GLideN64, the glue and the shaders
+  set(RA_LIB ${CMAKE_CURRENT_BINARY_DIR}/libretro_ctr.a)
+  add_custom_command(OUTPUT ${RA_LIB}
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${RA_LIB}
+    COMMAND sh -c "printf 'CREATE ${RA_LIB}\\nADDLIB $<TARGET_FILE:ctr64_core>\\nADDLIB $<TARGET_FILE:ctr64_gliden64>\\nADDLIB $<TARGET_FILE:ctr64_ra>\\nSAVE\\nEND\\n' | ${CMAKE_AR} -M"
+    DEPENDS ctr64_core ctr64_gliden64 ctr64_ra
+    VERBATIM)
+  add_custom_target(retroarch_core ALL DEPENDS ${RA_LIB})
+  return()
+endif()
 
 add_executable(ctr64
   src/main.c

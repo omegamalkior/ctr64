@@ -2731,7 +2731,7 @@ index 15a490f..a085ffa 100644
     /* Create or recreate converter if sample rate changed */
     if (!audio_converter || converter_input_rate != (unsigned)GameFreq)
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 4a9f129..b44fe94 100644
+index 4a9f129..532d5f2 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
 @@ -413,7 +413,9 @@ static bool emu_step_load_data()
@@ -2756,7 +2756,83 @@ index 4a9f129..b44fe94 100644
      game_data = NULL;
      //stop = 1;
  
-@@ -725,7 +730,13 @@ void retro_init(void)
+@@ -612,8 +617,31 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
+ 	 return result;
+ }
+ 
++#if defined(CTR64_RA)
++/* ctr64 core for RetroArch: options that must keep the 3DS values (GLideN64 on the PICA
++ * backend, HLE RSP, the dynarec) are answered by the core (ra_glue.c), the rest by RetroArch */
++static retro_environment_t ctr64_ra_frontend_environ;
++extern const char *ctr64_ra_forced_option(const char *key);
++static bool ctr64_ra_environ(unsigned cmd, void *data)
++{
++    if (cmd == RETRO_ENVIRONMENT_GET_VARIABLE && data) {
++        struct retro_variable *v = (struct retro_variable *)data;
++        const char *forced = v->key ? ctr64_ra_forced_option(v->key) : NULL;
++        if (forced) {
++            v->value = forced;
++            return true;
++        }
++    }
++    return ctr64_ra_frontend_environ(cmd, data);
++}
++#endif
++
+ void retro_set_environment(retro_environment_t cb)
+ {
++#if defined(CTR64_RA)
++    ctr64_ra_frontend_environ = cb;
++    cb = ctr64_ra_environ;
++#endif
+     environ_cb = cb;
+ 
+     static const struct retro_subsystem_memory_info memory_info_dd[] = {
+@@ -653,10 +681,18 @@ void retro_set_environment(retro_environment_t cb)
+ 
+ void retro_get_system_info(struct retro_system_info *info)
+ {
++#if defined(CTR64_RA)
++    /* ctr64 core for RetroArch 3DS: the core reads the ROM itself (it adopts or streams it) */
++    info->library_name = "ctr64";
++    info->library_version = "0.9.1 (Mupen64Plus-Next)";
++    info->valid_extensions = "n64|v64|z64|bin|u1";
++    info->need_fullpath = true;
++#else
+     info->library_name = "Mupen64Plus-Next";
+     info->library_version = "3.0" FLAVOUR_VERSION GIT_VERSION;
+     info->valid_extensions = "n64|v64|z64|bin|u1";
+     info->need_fullpath = false;
++#endif
+     info->block_extract = false;
+ }
+ 
+@@ -673,6 +709,12 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
+ #endif
+     info->timing.fps = vi_expected_refresh_rate_from_tv_standard(ROM_PARAMS.systemtype);
+     info->timing.sample_rate = 44100.0;
++#if defined(CTR64_RA)
++    {
++        extern void ctr64_ra_geometry(struct retro_game_geometry *g);
++        ctr64_ra_geometry(&info->geometry);
++    }
++#endif
+ }
+ 
+ unsigned retro_get_region (void)
+@@ -706,7 +748,11 @@ void retro_init(void)
+     copy_file(inifile, "mupen64plus.ini");
+ 
+     struct retro_log_callback log;
++#if defined(CTR64_RA)
++    unsigned colorMode = RETRO_PIXEL_FORMAT_RGB565; /* the PICA transfer engine converts to it */
++#else
+     unsigned colorMode = RETRO_PIXEL_FORMAT_XRGB8888;
++#endif
+ 
+     if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+         log_cb = log.log;
+@@ -725,7 +771,13 @@ void retro_init(void)
          initializing = true;
  
          retro_thread = co_active();
@@ -2770,11 +2846,25 @@ index 4a9f129..b44fe94 100644
      }
  
      m64p_error ret = CoreStartup(FRONTEND_API_VERSION, ".", ".", NULL, n64DebugCallback, 0, n64StateCallback);
-@@ -1982,8 +1993,14 @@ bool retro_load_game(const struct retro_game_info *game)
+@@ -1982,12 +2034,35 @@ bool retro_load_game(const struct retro_game_info *game)
      }
  #endif
  
-+#if defined(__3DS__)
++#if defined(CTR64_RA)
++    {
++        /* RetroArch: need_fullpath, the glue reads (or streams) the file into a buffer the core
++         * adopts, as the ctr64 app does */
++        extern void *ctr64_ra_load_rom(const char *path, size_t *size);
++        size_t sz = 0;
++        game_data = (uint8_t*)ctr64_ra_load_rom(game->path, &sz);
++        if (!game_data)
++            return false;
++        game_size = sz;
++        if (!emu_step_load_data())
++            return false;
++        goto ctr64_ra_loaded;
++    }
++#elif defined(__3DS__)
 +    /* ctr64: the frontend hands over a malloc'd buffer; taking ownership avoids one full copy
 +     * of the ROM (up to 64 MB), which the 3DS cannot spare. It is freed after ROM_OPEN. */
 +    game_data = (uint8_t*)game->data;
@@ -2785,6 +2875,63 @@ index 4a9f129..b44fe94 100644
      game_size = game->size;
  
      if (!emu_step_load_data())
+         return false;
++#if defined(CTR64_RA)
++ctr64_ra_loaded:
++#endif
+ 
+     if(current_rdp_type == RDP_PLUGIN_GLIDEN64 || current_rdp_type == RDP_PLUGIN_PARALLEL)
+     {
+@@ -2003,6 +2078,14 @@ bool retro_load_game(const struct retro_game_info *game)
+     }
+     
+     load_game_successful = true;
++#if defined(CTR64_RA)
++    {
++        /* no GL context comes from RetroArch: the PICA backend starts here */
++        extern bool ctr64_ra_after_load(void);
++        if (!ctr64_ra_after_load())
++            return false;
++    }
++#endif
+ 
+     return true;
+ }
+@@ -2042,8 +2125,15 @@ void retro_unload_game(void)
+     retro_savestate_complete = false;
+ }
+ 
++#if defined(CTR64_RA)
++extern void ctr64_ra_run_begin(void);
++extern bool ctr64_ra_run_end(const void **frame, unsigned *w, unsigned *h, size_t *pitch);
++#endif
+ void retro_run (void)
+ {
++#if defined(CTR64_RA)
++    ctr64_ra_run_begin();
++#endif
+     libretro_swap_buffer = false;
+     static bool updated = false;
+ 
+@@ -2071,6 +2161,18 @@ void retro_run (void)
+        glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+     }
+     
++#if defined(CTR64_RA)
++    {
++       const void *frame = NULL;
++       unsigned fw = 0, fh = 0;
++       size_t fp = 0;
++       if (ctr64_ra_run_end(&frame, &fw, &fh, &fp))
++          video_cb(frame, fw, fh, fp);
++       else
++          video_cb(NULL, fw, fh, fp); /* no new image this time: RetroArch shows the last one */
++       return;
++    }
++#endif
+     if (libretro_swap_buffer)
+     {
+        if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
 diff --git a/mupen64plus-core/src/api/callbacks.c b/mupen64plus-core/src/api/callbacks.c
 index 0a3c49b..b167959 100644
 --- a/mupen64plus-core/src/api/callbacks.c
@@ -7603,7 +7750,7 @@ index 6a90cf0..3e2f1f0 100644
      /* add some useful properties to ROM_PARAMS */
      ROM_PARAMS.systemtype = rom_country_code_to_system_type(ROM_HEADER.Country_code);
 diff --git a/mupen64plus-core/src/main/savestates.c b/mupen64plus-core/src/main/savestates.c
-index ef31870..f82f1c8 100644
+index ef31870..e37b7b3 100644
 --- a/mupen64plus-core/src/main/savestates.c
 +++ b/mupen64plus-core/src/main/savestates.c
 @@ -197,7 +197,20 @@ static void savestates_clear_job(void)
@@ -7617,7 +7764,7 @@ index ef31870..f82f1c8 100644
 +#else
  #define GETDATA(buff, type) *GETARRAY(buff, type, 1)
 +#endif
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +/* ctr64: large arrays are streamed in by the frontend (see savestates_load_m64p) */
 +extern void ctr64_state_fill(void *dst, size_t bytes);
 +#define COPYBIG(dst, buff, type, count) ctr64_state_fill(dst, sizeof(type)*(count))
@@ -7631,7 +7778,7 @@ index ef31870..f82f1c8 100644
  
  #define PUTDATA(buff, type, value) \
      do { type x = value; PUTARRAY(&x, buff, type, 1); } while(0)
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +/* ctr64: RDRAM and the TLB lookup tables (16 MB) are streamed out by the frontend in order with
 + * the rest of the state instead of being staged in memory (see savestates_save_m64p) */
 +extern void ctr64_state_put(const void *src, size_t bytes);
@@ -7662,7 +7809,7 @@ index ef31870..f82f1c8 100644
  
      /* Read the rest of the savestate */
      savestateSize = 16788244;
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +    /* ctr64: 16 MB of state does not fit the 3DS heap (twice, with this copy). The frontend passes
 +     * the state with RDRAM and the TLB LUTs cut out and streams those into place through
 +     * ctr64_state_fill(); the rest is parsed in place from the caller's buffer. */
@@ -7727,7 +7874,7 @@ index ef31870..f82f1c8 100644
  
      *r4300_cp0_last_addr(&dev->r4300.cp0) = *r4300_pc(&dev->r4300);
  
-+#if !(defined(__LIBRETRO__) && defined(__3DS__))
++#if !(defined(__LIBRETRO__) && defined(__3DS__)) || defined(CTR64_RA)
      free(savestateData);
 +#endif
 +#undef memcpy_state
@@ -7749,7 +7896,7 @@ index ef31870..f82f1c8 100644
  
      // Allocate memory for the save state data
      save->size = 16788288 + sizeof(queue) + 4 + 4096;
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +    save->data = curr = malloc(save->size - CTR64_BIG_BYTES);
 +    ctr64_put_mark = curr;
 +#else
@@ -7762,7 +7909,7 @@ index ef31870..f82f1c8 100644
          return 0;
      }
  
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +    memset(save->data, 0, save->size - CTR64_BIG_BYTES);
 +#else
      memset(save->data, 0, save->size);
@@ -7793,7 +7940,7 @@ index ef31870..f82f1c8 100644
      PUTDATA(curr, uint64_t, *r4300_cp0_latch((struct cp0*)&dev->r4300.cp0));
      PUTDATA(curr, uint64_t, *r4300_cp2_latch((struct cp2*)&dev->r4300.cp2));
  
-+#if defined(__LIBRETRO__) && defined(__3DS__)
++#if defined(__LIBRETRO__) && defined(__3DS__) && !defined(CTR64_RA)
 +    /* the rest, zero-padded to the full state size like the buffered path */
 +    ctr64_state_put(ctr64_put_mark, (char *)save->data + (save->size - CTR64_BIG_BYTES) - ctr64_put_mark);
 +    free(save->data);
