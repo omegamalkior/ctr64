@@ -467,14 +467,15 @@ index 0000000..dc7562d
 +#endif
 diff --git a/GLideN64/src/Ctr64Words.h b/GLideN64/src/Ctr64Words.h
 new file mode 100644
-index 0000000..9717edc
+index 0000000..4205276
 --- /dev/null
 +++ b/GLideN64/src/Ctr64Words.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,107 @@
 +#ifndef CTR64_WORDS_H
 +#define CTR64_WORDS_H
-+/* ctr64 (3DS, ARM11): word runs compared several words per load-multiple.
-+ * Used by the frame buffer validity checks (FrameBuffer::isValid, every VI). Answers are the same as the plain loops:
++/* ctr64 (3DS, ARM11): word runs compared / filled 8 words per load/store-multiple.
++ * Used by the frame buffer validity checks (FrameBuffer::isValid, every VI) and RDRAM fills
++ * (FrameBufferList::fillRDRAM, every clear). Answers are the same as the plain loops:
 + * the scans only skip groups whose words are all exactly equal; every other group is left to
 + * the caller's exact (masked) count. */
 +
@@ -530,6 +531,31 @@ index 0000000..9717edc
 +	return a;
 +}
 +
++/* p[0..n) = v */
++static inline void ctr64_fill_words(unsigned int *p, unsigned int n, unsigned int v)
++{
++	unsigned int *e8 = p + (n & ~7u);
++	if (p != e8) {
++		__asm__ volatile(
++			"mov     r4, %[v]\n\t"
++			"mov     r5, %[v]\n\t"
++			"mov     r6, %[v]\n\t"
++			"mov     r7, %[v]\n\t"
++			"mov     r8, %[v]\n\t"
++			"mov     r9, %[v]\n\t"
++			"mov     r10, %[v]\n\t"
++			"mov     r12, %[v]\n\t"
++			"1:\n\t"
++			"stmia   %[p]!, {r4, r5, r6, r7, r8, r9, r10, r12}\n\t"
++			"cmp     %[p], %[e]\n\t"
++			"blo     1b\n\t"
++			: [p] "+r"(p)
++			: [e] "r"(e8), [v] "r"(v)
++			: "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12", "cc", "memory");
++	}
++	for (unsigned int i = 0; i < (n & 7u); ++i)
++		p[i] = v;
++}
 +#else
 +static inline const unsigned int *ctr64_skip_eq8(const unsigned int *p, const unsigned int *end, unsigned int v)
 +{
@@ -543,6 +569,11 @@ index 0000000..9717edc
 +	while (a < aend && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3])
 +		a += 4, b += 4;
 +	return a;
++}
++static inline void ctr64_fill_words(unsigned int *p, unsigned int n, unsigned int v)
++{
++	for (unsigned int i = 0; i < n; ++i)
++		p[i] = v;
 +}
 +#endif
 +
@@ -646,7 +677,7 @@ index ac4e150..855667d 100644
  	void setCleared(bool _cleared);
  	DepthBuffer *findBuffer(u32 _address);
 diff --git a/GLideN64/src/FrameBuffer.cpp b/GLideN64/src/FrameBuffer.cpp
-index 68cf2bf..4c40a9a 100644
+index 68cf2bf..5ea41b3 100644
 --- a/GLideN64/src/FrameBuffer.cpp
 +++ b/GLideN64/src/FrameBuffer.cpp
 @@ -1,3 +1,5 @@
@@ -808,21 +839,16 @@ index 68cf2bf..4c40a9a 100644
  	if (g_debugger.isDebugMode()) {
  		g_debugger.draw();
  		return;
-@@ -1711,12 +1812,27 @@ void FrameBufferList::fillRDRAM(s32 ulx, s32 uly, s32 lrx, s32 lry)
+@@ -1711,12 +1812,22 @@ void FrameBufferList::fillRDRAM(s32 ulx, s32 uly, s32 lrx, s32 lry)
  	dst += static_cast<u32>(uly) * ci_width_in_dwords;
  	if (!isMemoryWritable(dst, lowerBound - gDP.colorImage.address))
  		return;
 +#ifdef __3DS__
 +	/* ctr64: full-screen clears every frame (MM, OoT): 8 words a step */
 +	const u32 fill = gDP.fillColor.color;
++	const u32 n = lrx > ulx ? static_cast<u32>(lrx - ulx) : 0;
 +	for (s32 y = uly; y < lry; ++y) {
-+		u32 *p = dst + ulx, *const e = dst + (lrx > ulx ? lrx : ulx);
-+		for (; p + 8 <= e; p += 8) {
-+			p[0] = fill; p[1] = fill; p[2] = fill; p[3] = fill;
-+			p[4] = fill; p[5] = fill; p[6] = fill; p[7] = fill;
-+		}
-+		for (; p < e; ++p)
-+			*p = fill;
++		ctr64_fill_words(dst + ulx, n, fill); /* stm of 8 registers */
 +		dst += ci_width_in_dwords;
 +	}
 +#else
